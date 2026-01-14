@@ -1,4 +1,3 @@
-
 --// SERVICES
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -27,7 +26,7 @@ gui.Parent = playerGui
 local startBtn = Instance.new("TextButton")
 startBtn.Size = UDim2.fromOffset(160, 50)
 startBtn.Position = UDim2.fromOffset(20, 20)
-startBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 0) -- green initially
+startBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 0)
 startBtn.TextColor3 = Color3.new(1,1,1)
 startBtn.Font = Enum.Font.SourceSansBold
 startBtn.TextSize = 20
@@ -38,14 +37,14 @@ startBtn.MouseButton1Click:Connect(function()
     enabled = not enabled
     if enabled then
         startBtn.Text = "STOP FARM"
-        startBtn.BackgroundColor3 = Color3.fromRGB(200,0,0) -- red while running
+        startBtn.BackgroundColor3 = Color3.fromRGB(200,0,0)
     else
         startBtn.Text = "START FARM"
-        startBtn.BackgroundColor3 = Color3.fromRGB(0,180,0) -- green when stopped
+        startBtn.BackgroundColor3 = Color3.fromRGB(0,180,0)
     end
 end)
 
---// CHARACTER SETUP
+--// CHARACTER & DRAGON
 local function getCharacterParts()
     local character = player.Character or player.CharacterAdded:Wait()
     local hrp = character:WaitForChild("HumanoidRootPart")
@@ -79,20 +78,29 @@ end
 --// TELEPORT TO DROPS
 local function collectNearbyDrops(hrp, radius)
     radius = radius or DROP_RADIUS
+    local drops = {}
     for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("BasePart") then
             local name = obj.Name:lower()
             if name:find("food") or name:find("sudachi") or name:find("edamame") then
                 if (hrp.Position - obj.Position).Magnitude <= radius then
-                    hrp.CFrame = CFrame.new(obj.Position + Vector3.new(0,2,0))
-                    task.wait(0.03)
+                    table.insert(drops, obj)
                 end
             end
         end
     end
+    -- Sort by nearest first
+    table.sort(drops, function(a,b)
+        return (hrp.Position - a.Position).Magnitude < (hrp.Position - b.Position).Magnitude
+    end)
+    -- Move to each drop
+    for _, drop in ipairs(drops) do
+        hrp.CFrame = CFrame.new(drop.Position + Vector3.new(0,2,0))
+        task.wait(0.03)
+    end
 end
 
---// ATTACK TREE UNTIL DESTROYED
+--// ATTACK TREE
 local function attackTree(hrp, dragon, BreathFireRemote, PlaySoundRemote, tree)
     if not isTreeValid(tree) then return end
     local billboard = tree.BillboardPart
@@ -101,12 +109,8 @@ local function attackTree(hrp, dragon, BreathFireRemote, PlaySoundRemote, tree)
     local startTime = os.clock()
 
     while enabled do
-        if not tree.Parent or not tree:FindFirstChild("BillboardPart") then
-            break
-        end
-        if os.clock() - startTime > TREE_TIMEOUT then
-            break
-        end
+        if not tree.Parent or not tree:FindFirstChild("BillboardPart") then break end
+        if os.clock() - startTime > TREE_TIMEOUT then break end
 
         -- START BREATH
         BreathFireRemote:FireServer(true)
@@ -123,18 +127,18 @@ local function attackTree(hrp, dragon, BreathFireRemote, PlaySoundRemote, tree)
         collectNearbyDrops(hrp, DROP_RADIUS)
     end
 
-    -- FINAL COLLECTION AFTER TREE DESTROYED
+    -- AFTER TREE DESTROYED
+    local LargeNodeDropsRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("LargeNodeDropsRemote")
     if billboard and billboard.Parent then
-        local LargeNodeDropsRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("LargeNodeDropsRemote")
-        LargeNodeDropsRemote:FireServer(billboard, 1, 2)
-        task.wait(0.1)
+        LargeNodeDropsRemote:FireServer(billboard, 1, 1)
+        task.wait(0.1) -- wait for server to spawn drops
         collectNearbyDrops(hrp, DROP_RADIUS)
     end
 
     table.insert(destroyedTrees, tree)
 end
 
---// NULLIFY MOB DAMAGE (IMMUNITY WHILE FARMING)
+--// IMMUNITY TO MOB DAMAGE
 task.spawn(function()
     while true do
         if enabled then
@@ -167,6 +171,3 @@ task.spawn(function()
                 task.wait(LOOP_DELAY)
             end
         end
-        task.wait(0.05)
-    end
-end)
