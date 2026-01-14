@@ -1,20 +1,10 @@
+
 --// SERVICES
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
-local character = player.Character or player.CharacterAdded:Wait()
-local hrp = character:WaitForChild("HumanoidRootPart")
-local dragon = character:WaitForChild("Dragons"):WaitForChild("1")
-local dragonRemotes = dragon:WaitForChild("Remotes")
-
-local BreathFireRemote = dragonRemotes:WaitForChild("BreathFireRemote")
-local PlaySoundRemote = dragonRemotes:WaitForChild("PlaySoundRemote")
-local LargeNodeDropsRemote =
-    ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("LargeNodeDropsRemote")
-
-local MobDamageRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("MobDamageRemote")
 
 --// SETTINGS
 local BREATH_ON = 0.15
@@ -28,10 +18,11 @@ local enabled = false
 local destroyedTrees = {}
 
 --// SIMPLE GUI
+local playerGui = player:WaitForChild("PlayerGui")
 local gui = Instance.new("ScreenGui")
 gui.Name = "AutoFarmGui"
 gui.ResetOnSpawn = false
-gui.Parent = player:WaitForChild("PlayerGui")
+gui.Parent = playerGui
 
 local startBtn = Instance.new("TextButton")
 startBtn.Size = UDim2.fromOffset(160, 50)
@@ -53,6 +44,16 @@ startBtn.MouseButton1Click:Connect(function()
         startBtn.BackgroundColor3 = Color3.fromRGB(0,180,0) -- green when stopped
     end
 end)
+
+--// CHARACTER SETUP
+local function getCharacterParts()
+    local character = player.Character or player.CharacterAdded:Wait()
+    local hrp = character:WaitForChild("HumanoidRootPart")
+    local dragon = character:WaitForChild("Dragons"):WaitForChild("1")
+    local dragonRemotes = dragon:WaitForChild("Remotes")
+    return character, hrp, dragon, dragonRemotes
+end
+
 --// TREE VALIDATION
 local function isTreeValid(tree)
     return tree and tree.Parent and tree:IsDescendantOf(Workspace)
@@ -60,7 +61,7 @@ local function isTreeValid(tree)
 end
 
 --// GET NEAREST TREES
-local function getTrees()
+local function getTrees(hrp)
     local folder = Workspace:WaitForChild("Interactions"):WaitForChild("Nodes"):WaitForChild("Food")
     local list = {}
     for _, tree in ipairs(folder:GetChildren()) do
@@ -69,14 +70,14 @@ local function getTrees()
         end
     end
     table.sort(list, function(a,b)
-        return (hrp.Position - a.PrimaryPart.Position).Magnitude <
+        return (hrp.Position - a.PrimaryPart.Position).Magnitude < 
                (hrp.Position - b.PrimaryPart.Position).Magnitude
     end)
     return list
 end
 
 --// TELEPORT TO DROPS
-local function collectNearbyDrops(radius)
+local function collectNearbyDrops(hrp, radius)
     radius = radius or DROP_RADIUS
     for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("BasePart") then
@@ -92,7 +93,7 @@ local function collectNearbyDrops(radius)
 end
 
 --// ATTACK TREE UNTIL DESTROYED
-local function attackTree(tree)
+local function attackTree(hrp, dragon, BreathFireRemote, PlaySoundRemote, tree)
     if not isTreeValid(tree) then return end
     local billboard = tree.BillboardPart
     hrp.CFrame = tree.PrimaryPart.CFrame + TREE_OFFSET
@@ -110,7 +111,7 @@ local function attackTree(tree)
         -- START BREATH
         BreathFireRemote:FireServer(true)
         task.wait(0.05)
-    -- DAMAGE TRIGGER
+        -- DAMAGE TRIGGER
         PlaySoundRemote:FireServer("Breath","Destructibles",billboard)
         task.wait(BREATH_ON)
 
@@ -119,14 +120,15 @@ local function attackTree(tree)
         task.wait(BREATH_OFF)
 
         -- TELEPORT TO DROPS WHILE ATTACKING
-        collectNearbyDrops(DROP_RADIUS)
+        collectNearbyDrops(hrp, DROP_RADIUS)
     end
 
     -- FINAL COLLECTION AFTER TREE DESTROYED
     if billboard and billboard.Parent then
+        local LargeNodeDropsRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("LargeNodeDropsRemote")
         LargeNodeDropsRemote:FireServer(billboard, 1, 2)
         task.wait(0.1)
-        collectNearbyDrops(DROP_RADIUS)
+        collectNearbyDrops(hrp, DROP_RADIUS)
     end
 
     table.insert(destroyedTrees, tree)
@@ -137,8 +139,9 @@ task.spawn(function()
     while true do
         if enabled then
             pcall(function()
+                local character, hrp, dragon, dragonRemotes = getCharacterParts()
+                local MobDamageRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("MobDamageRemote")
                 for _, mob in ipairs(Workspace:GetChildren()) do
-                    -- Replace with your mobs folder if different
                     if mob.Name == "Wanyudo" then
                         MobDamageRemote:FireServer(dragon, 0, mob)
                     end
@@ -153,10 +156,14 @@ end)
 task.spawn(function()
     while true do
         if enabled then
-            local trees = getTrees()
+            local character, hrp, dragon, dragonRemotes = getCharacterParts()
+            local BreathFireRemote = dragonRemotes:WaitForChild("BreathFireRemote")
+            local PlaySoundRemote = dragonRemotes:WaitForChild("PlaySoundRemote")
+
+            local trees = getTrees(hrp)
             for _, tree in ipairs(trees) do
                 if not enabled then break end
-                attackTree(tree)
+                attackTree(hrp, dragon, BreathFireRemote, PlaySoundRemote, tree)
                 task.wait(LOOP_DELAY)
             end
         end
