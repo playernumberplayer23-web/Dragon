@@ -1,181 +1,142 @@
 --///////////////////////////////////////////////////////////
---// ULTRA FAST TREE FARM + TERRAIN DROP COLLECT WITH BURST DAMAGE
+--// CONTINUOUS TREE AUTOFARM (All nodes + drop collection)
 --///////////////////////////////////////////////////////////
 
 local Players = game:GetService("Players")
-local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local player = Players.LocalPlayer
+local Workspace = game:GetService("Workspace")
 
--- SETTINGS
-local TREE_OFFSET = Vector3.new(0, 5, 0)  -- height above tree
-local STACKS_PER_BURST = 5                -- BreathFire shots per burst
-local TELEPORT_STEPS = 10                 -- smooth teleport steps
-local TELEPORT_STEP_DELAY = 0.01          -- delay between teleport steps
-local DROP_WAIT = 0.02                     -- delay between drop collections
-local LOOP_DELAY = 0.01                    -- small delay between trees
+local player = Players.LocalPlayer
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+local LargeNodeDropsRemote = Remotes:WaitForChild("LargeNodeDropsRemote")
 
 local enabled = false
 
--- GUI (Black + White)
-local gui = Instance.new("ScreenGui")
-gui.Name = "AutoFarmGui"
-gui.ResetOnSpawn = false
-gui.Parent = game:GetService("CoreGui")
+-- GUI
+local gui = Instance.new("ScreenGui", player.PlayerGui)
+gui.Name = "TreeFarm"
 
-local startBtn = Instance.new("TextButton")
-startBtn.Size = UDim2.fromOffset(160, 50)
-startBtn.Position = UDim2.fromOffset(20, 20)
-startBtn.BackgroundColor3 = Color3.new(0,0,0)
-startBtn.TextColor3 = Color3.new(1,1,1)
-startBtn.Font = Enum.Font.SourceSansBold
-startBtn.TextSize = 20
-startBtn.Text = "START FARM"
-startBtn.Parent = gui
+local btn = Instance.new("TextButton", gui)
+btn.Size = UDim2.fromOffset(160, 50)
+btn.Position = UDim2.fromOffset(20, 20)
+btn.BackgroundColor3 = Color3.fromRGB(0,0,0)
+btn.TextColor3 = Color3.fromRGB(255,255,255)
+btn.Font = Enum.Font.SourceSansBold
+btn.TextSize = 20
+btn.Text = "START"
 
-startBtn.MouseButton1Click:Connect(function()
+btn.MouseButton1Click:Connect(function()
     enabled = not enabled
-    if enabled then
-        startBtn.Text = "STOP FARM"
-        startBtn.BackgroundColor3 = Color3.new(1,1,1)
-        startBtn.TextColor3 = Color3.new(0,0,0)
-    else
-        startBtn.Text = "START FARM"
-        startBtn.BackgroundColor3 = Color3.new(0,0,0)
-        startBtn.TextColor3 = Color3.new(1,1,1)
-    end
+    btn.Text = enabled and "STOP" or "START"
 end)
 
--- GLOBALS
-local hrp, dragon, BreathFireRemote, PlaySoundRemote
-local LargeNodeDropsRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("LargeNodeDropsRemote")
+-- Character + Dragon
+local function getChar()
+    local c = player.Character or player.CharacterAdded:Wait()
+    local hrp = c:WaitForChild("HumanoidRootPart")
 
--- SETUP CHARACTER & DRAGON
-local function setupCharacter()
+    local dragon
     repeat
-        local char = player.Character or player.CharacterAdded:Wait()
-        hrp = char:FindFirstChild("HumanoidRootPart")
-        dragon = char:FindFirstChild("Dragons") and char.Dragons:FindFirstChild("1")
-        task.wait(0.1)
-    until hrp and dragon
+        dragon = c:FindFirstChild("Dragons") and c.Dragons:FindFirstChild("1")
+        task.wait()
+    until dragon
 
-    local dragonRemotes = dragon:FindFirstChild("Remotes")
-    BreathFireRemote = dragonRemotes and dragonRemotes:FindFirstChild("BreathFireRemote")
-    PlaySoundRemote = dragonRemotes and dragonRemotes:FindFirstChild("PlaySoundRemote")
+    local remotes = dragon:WaitForChild("Remotes")
+    return hrp, remotes:WaitForChild("BreathFireRemote"), remotes:WaitForChild("PlaySoundRemote")
 end
 
--- TREE FUNCTIONS
+-- Get all trees
 local function getTrees()
     local folder = Workspace:FindFirstChild("Interactions")
     folder = folder and folder:FindFirstChild("Nodes")
     folder = folder and folder:FindFirstChild("Food")
     if not folder then return {} end
 
-    local trees = {}
-    for _, t in ipairs(folder:GetChildren()) do
-        if t and t.Parent then
-            table.insert(trees, t)
+    local t = {}
+    for _, v in ipairs(folder:GetChildren()) do
+        if v:IsA("Model") and v:FindFirstChild("BillboardPart") and v.PrimaryPart then
+            table.insert(t, v)
         end
     end
-    return trees
+    return t
 end
 
-local function isTreeAlive(tree)
-    return tree and tree.Parent
+-- Sort by distance
+local function sortByDistance(list, hrp)
+    table.sort(list,function(a,b)
+        return (hrp.Position - a.PrimaryPart.Position).Magnitude <
+               (hrp.Position - b.PrimaryPart.Position).Magnitude
+    end)
 end
 
--- DAMAGE TREE FUNCTION WITH BURST DAMAGE
-local function attackTree(tree)
-    if not isTreeAlive(tree) then return end
-    local billboard = tree:FindFirstChild("BillboardPart")
-    if not billboard then return end
+-- Attack tree + collect drops
+local STACKS = 20 -- faster than 50
+local HIT_DELAY = 0.003
+local TREE_OFFSET = Vector3.new(0,0,6)
 
-    -- get all hitboxes
+local function hitTree(tree, hrp, BreathFireRemote, PlaySoundRemote)
+    if not tree or not tree.Parent or not tree:FindFirstChild("BillboardPart") then return end
+    local billboard = tree.BillboardPart
+
+    -- Teleport close to tree
+    local targetCFrame = tree.PrimaryPart.CFrame + TREE_OFFSET
+    hrp.CFrame = targetCFrame
+
+    -- Hit all hitboxes
     local hitboxes = {}
-    for _, c in ipairs(tree:GetChildren()) do
-        if c:IsA("BasePart") and c.Name:lower():find("hitbox") then
-            table.insert(hitboxes, c)
+    for _, v in ipairs(tree:GetDescendants()) do
+        if v:IsA("BasePart") then
+            table.insert(hitboxes, v)
         end
     end
 
-    -- smooth teleport above tree
-    if hrp then
-        local targetPos = billboard.Position + TREE_OFFSET
-        local startPos = hrp.Position
-        for i = 1, TELEPORT_STEPS do
-            local alpha = i / TELEPORT_STEPS
-            hrp.CFrame = CFrame.new(startPos:Lerp(targetPos, alpha))
-            task.wait(TELEPORT_STEP_DELAY)
-        end
-    end
-
-    -- BURST DAMAGE: hit all parts STACKS_PER_BURST times instantly
-    for i = 1, STACKS_PER_BURST do
+    for i=1,STACKS do
         BreathFireRemote:FireServer(true)
-        task.wait(0.003) -- tiny delay for server registration
-        -- hit main billboard
-        PlaySoundRemote:FireServer("Breath","Destructibles", billboard)
-        -- hit all hitboxes
-        for _, hb in ipairs(hitboxes) do
-            PlaySoundRemote:FireServer("Breath","Destructibles", hb)
+        PlaySoundRemote:FireServer("Breath","Destructibles",billboard)
+        for _,hb in ipairs(hitboxes) do
+            PlaySoundRemote:FireServer("Breath","Destructibles",hb)
         end
         BreathFireRemote:FireServer(false)
-    end
-end
-
--- TERRAIN DROP COLLECTION FUNCTIONS
-local function getTerrainDrops()
-    local drops = {}
-    local terrain = Workspace:FindFirstChild("Terrain")
-    if not terrain then return drops end
-
-    for _, attachment in ipairs(terrain:GetDescendants()) do
-        if attachment:IsA("PartAdorneeAttachment") then
-            local itemDrop = attachment:FindFirstChild("ItemDrops")
-            if itemDrop then
-                table.insert(drops, itemDrop)
-            end
-        end
+        task.wait(HIT_DELAY)
     end
 
-    return drops
-end
-
-local function collectTerrainDrop(itemDrop)
-    if itemDrop then
-        local args = {itemDrop, 1, 6} -- adjust numbers if needed
-        LargeNodeDropsRemote:FireServer(unpack(args))
-    end
-end
-
--- TERRAIN DROP COLLECTION LOOP
-task.spawn(function()
-    while true do
-        if enabled then
-            local drops = getTerrainDrops()
-            for _, drop in ipairs(drops) do
-                collectTerrainDrop(drop)
-                task.wait(DROP_WAIT)
-            end
-        end
+    task.wait(0.05)
+    -- Fire drop remote multiple times to ensure collection
+    for i=1,3 do
+        LargeNodeDropsRemote:FireServer(billboard,1,6)
         task.wait(0.05)
     end
-end)
+end
 
--- TREE FARM LOOP
+-- Random position generator (optional fallback)
+local function getRandomPosition()
+    local x = math.random(-500,500)
+    local y = 10
+    local z = math.random(-500,500)
+    return Vector3.new(x,y,z)
+end
+
+-- Continuous loop
 task.spawn(function()
-    setupCharacter()
+    local hrp, BreathFireRemote, PlaySoundRemote = getChar()
+
     while true do
-        if enabled and hrp and dragon and BreathFireRemote and PlaySoundRemote then
+        if enabled then
             local trees = getTrees()
-            for _, tree in ipairs(trees) do
-                if not enabled then break end
-                if isTreeAlive(tree) then
-                    attackTree(tree)
-                    task.wait(LOOP_DELAY)
+            sortByDistance(trees, hrp)
+
+            if #trees == 0 then
+                -- No trees nearby: move randomly
+                local newPos = getRandomPosition()
+                hrp.CFrame = CFrame.new(newPos)
+                task.wait(0.5)
+            else
+                -- Loop through all trees continuously
+                for _, tree in ipairs(trees) do
+                    hitTree(tree, hrp, BreathFireRemote, PlaySoundRemote)
                 end
             end
         end
-        task.wait(0.005)
+        task.wait(0.1) -- small wait to prevent freezing
     end
 end)
