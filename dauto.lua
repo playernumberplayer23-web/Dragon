@@ -1,5 +1,5 @@
 --///////////////////////////////////////////////////////////
---// CONTINUOUS TREE AUTOFARM (All nodes + drop collection)
+--// ULTIMATE TREE ORBIT AUTOFARM (SAFE TELEPORT)
 --///////////////////////////////////////////////////////////
 
 local Players = game:GetService("Players")
@@ -45,7 +45,7 @@ local function getChar()
     return hrp, remotes:WaitForChild("BreathFireRemote"), remotes:WaitForChild("PlaySoundRemote")
 end
 
--- Get all trees
+-- Tree scanner
 local function getTrees()
     local folder = Workspace:FindFirstChild("Interactions")
     folder = folder and folder:FindFirstChild("Nodes")
@@ -61,6 +61,16 @@ local function getTrees()
     return t
 end
 
+-- Alive check
+local function isTreeAlive(tree)
+    if not tree or not tree.Parent then return false end
+    if not tree:FindFirstChild("BillboardPart") then return false end
+    for _, v in ipairs(tree:GetDescendants()) do
+        if v:IsA("BasePart") then return true end
+    end
+    return false
+end
+
 -- Sort by distance
 local function sortByDistance(list, hrp)
     table.sort(list,function(a,b)
@@ -69,20 +79,27 @@ local function sortByDistance(list, hrp)
     end)
 end
 
--- Attack tree + collect drops
-local STACKS = 20 -- faster than 50
-local HIT_DELAY = 0.003
-local TREE_OFFSET = Vector3.new(0,0,6)
+-- SAFE Y calculation using raycast
+local function getSafeY(position)
+    local rayOrigin = position + Vector3.new(0, 500, 0)
+    local rayDirection = Vector3.new(0, -1000, 0)
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterDescendantsInstances = {player.Character}
+    raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
 
+    local ray = Workspace:Raycast(rayOrigin, rayDirection, raycastParams)
+    if ray then
+        return ray.Position.Y + 5
+    else
+        return position.Y
+    end
+end
+
+-- Attack system: teleport to tree + orbit
 local function hitTree(tree, hrp, BreathFireRemote, PlaySoundRemote)
-    if not tree or not tree.Parent or not tree:FindFirstChild("BillboardPart") then return end
+    if not isTreeAlive(tree) then return end
     local billboard = tree.BillboardPart
 
-    -- Teleport close to tree
-    local targetCFrame = tree.PrimaryPart.CFrame + TREE_OFFSET
-    hrp.CFrame = targetCFrame
-
-    -- Hit all hitboxes
     local hitboxes = {}
     for _, v in ipairs(tree:GetDescendants()) do
         if v:IsA("BasePart") then
@@ -90,33 +107,51 @@ local function hitTree(tree, hrp, BreathFireRemote, PlaySoundRemote)
         end
     end
 
-    for i=1,STACKS do
+    local STACKS = 50
+    local HIT_DELAY = 0.012
+    local MIN_RADIUS = 15
+    local MAX_RADIUS = 25
+
+    local lastOffset
+
+    for i = 1, STACKS do
+        if not isTreeAlive(tree) then break end
+
+        -- Orbit offset every 8 hits
+        if i % 8 == 1 or not lastOffset then
+            local angle = math.rad(math.random(0, 360))
+            local radius = math.random(MIN_RADIUS, MAX_RADIUS)
+            lastOffset = Vector3.new(
+                math.cos(angle) * radius,
+                0,
+                math.sin(angle) * radius
+            )
+        end
+
+        -- teleport to tree + orbit
+        local targetPos = tree.PrimaryPart.Position + lastOffset
+        targetPos = Vector3.new(targetPos.X, getSafeY(targetPos), targetPos.Z)
+        hrp.CFrame = CFrame.new(targetPos)
+
         BreathFireRemote:FireServer(true)
         PlaySoundRemote:FireServer("Breath","Destructibles",billboard)
-        for _,hb in ipairs(hitboxes) do
+        for _, hb in ipairs(hitboxes) do
             PlaySoundRemote:FireServer("Breath","Destructibles",hb)
         end
         BreathFireRemote:FireServer(false)
+
         task.wait(HIT_DELAY)
     end
 
+    -- Collect drops
     task.wait(0.05)
-    -- Fire drop remote multiple times to ensure collection
-    for i=1,3 do
-        LargeNodeDropsRemote:FireServer(billboard,1,6)
+    for i = 1, 3 do
+        LargeNodeDropsRemote:FireServer(billboard, 1, 6)
         task.wait(0.05)
     end
 end
 
--- Random position generator (optional fallback)
-local function getRandomPosition()
-    local x = math.random(-500,500)
-    local y = 10
-    local z = math.random(-500,500)
-    return Vector3.new(x,y,z)
-end
-
--- Continuous loop
+-- Main engine: teleport from tree to tree
 task.spawn(function()
     local hrp, BreathFireRemote, PlaySoundRemote = getChar()
 
@@ -125,18 +160,24 @@ task.spawn(function()
             local trees = getTrees()
             sortByDistance(trees, hrp)
 
-            if #trees == 0 then
-                -- No trees nearby: move randomly
-                local newPos = getRandomPosition()
-                hrp.CFrame = CFrame.new(newPos)
-                task.wait(0.5)
-            else
-                -- Loop through all trees continuously
-                for _, tree in ipairs(trees) do
+            for _, tree in ipairs(trees) do
+                if isTreeAlive(tree) then
                     hitTree(tree, hrp, BreathFireRemote, PlaySoundRemote)
+                    task.wait(0.2) -- slight delay between trees
                 end
             end
+        else
+            task.wait(0.2)
         end
-        task.wait(0.1) -- small wait to prevent freezing
+    end
+end)
+
+-- New tree spawns
+Workspace.DescendantAdded:Connect(function(obj)
+    if enabled and obj:IsA("Model") and obj.Name:match("LargeFoodNode") and obj:FindFirstChild("BillboardPart") and obj.PrimaryPart then
+        task.spawn(function()
+            local hrp, bf, ps = getChar()
+            hitTree(obj, hrp, bf, ps)
+        end)
     end
 end)
